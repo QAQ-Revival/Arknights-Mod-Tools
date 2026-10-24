@@ -11,8 +11,13 @@ function git(args, cwd = root) {
 const branches = require('../sources.json').submoduleBranches;
 for (const name of Object.keys(branches)) {
   const directory = path.join(root, 'vendor', name);
-  if (require('node:fs').existsSync(path.join(directory, '.git')) && git(['status', '--porcelain'], directory)) throw Error('Save local changes before updating ' + name);
+  if (require('node:fs').existsSync(path.join(directory, '.git')) && git(['status', '--porcelain', '--ignore-submodules=all'], directory)) throw Error('Save local changes before updating ' + name);
 }
-git(['submodule', 'update', '--init', '--remote', '--recursive']);
+git(['submodule', 'update', '--init', '--recursive']);
+git(['submodule', 'foreach', '--recursive', 'test -z "$(git status --porcelain --ignore-submodules=all)" || exit 1']);
+// Shallow CI clones can fetch only the default branch. Nested dependencies may
+// track a different branch (for example Ark-FBS-Py's dist branch).
+git(['submodule', 'foreach', '--recursive', 'git config --replace-all remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"']);
+git(['submodule', 'update', '--remote', '--recursive']);
 git(['lfs', 'pull'], path.join(root, 'vendor/UnityPy'));
 console.log(git(['submodule', 'status', '--recursive']));

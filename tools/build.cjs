@@ -23,6 +23,9 @@ for (const name of ['minhook', 'UnityPy', 'Ark-Unpacker']) {
   dependencies[name] = run('git', [...bot, '-C', directory, 'rev-parse', 'HEAD']);
 }
 const pins = JSON.parse(fs.readFileSync(path.join(root, 'sources.json'), 'utf8'));
+let sourceCommit = null;
+try { sourceCommit = run('git', [...bot, 'rev-parse', 'HEAD']); } catch { /* An initial checkout can be built before its first commit. */ }
+const sourceDirty = !!run('git', [...bot, 'status', '--porcelain', '--ignore-submodules=all']);
 const vswhere = path.join(process.env['ProgramFiles(x86)'] || 'C:/Program Files (x86)', 'Microsoft Visual Studio/Installer/vswhere.exe');
 const visualStudio = run(vswhere, ['-latest', '-products', '*', '-requires', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64', '-property', 'installationPath']);
 if (!visualStudio) throw Error('Visual C++ x64 build tools are required');
@@ -77,5 +80,5 @@ for (const entry of fs.readdirSync(dist, { recursive: true, withFileTypes: true 
   if (/fmod|M4ALauncher|Bootstrapper\.dll/i.test(relative)) throw Error('Opaque or unused audio binary in output: ' + relative);
   inventory[relative] = hash(file);
 }
-fs.writeFileSync(path.join(dist, 'component.json'), JSON.stringify({ schemaVersion: 1, protocol: 1, source: pins.repository, dependencies, buildStatus: 'compiled', gameRuntimeValidated: false, capabilities: ['current-pc-bundle-rebuild', 'assetbundle-file-redirection'], files: inventory }, null, 2));
+fs.writeFileSync(path.join(dist, 'component.json'), JSON.stringify({ schemaVersion: 1, protocol: 1, source: pins.repository, sourceCommit, sourceDirty, dependencies, buildStatus: 'compiled', gameRuntimeValidated: false, capabilities: ['current-pc-bundle-rebuild', 'assetbundle-file-redirection'], files: inventory }, null, 2));
 console.log('Built source-controlled loader and offline worker; no game executed.');
