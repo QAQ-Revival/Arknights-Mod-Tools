@@ -1,0 +1,17 @@
+lz4==4.4.5
+brotli==1.2.1
+Pillow==13.0.0
+texture2ddecoder==1.0.6
+etcpak==0.9.15
+astc-encoder-py==0.1.12
+archspec==0.2.6
+fsspec==2026.9.0
+attrs==26.1.0
+tpk_ar==0.2.4
+pyinstaller==6.16.0
+pyinstaller-hooks-contrib==2026.9
+altgraph==0.17.5
+packaging==26.3
+pefile==2023.2.7
+pywin32-ctypes==0.2.3
+setuptools==84.2.1
