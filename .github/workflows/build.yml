@@ -1,0 +1,36 @@
+name: Source build
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    env:
+      GIT_AUTHOR_NAME: qaq-revival-publisher[bot]
+      GIT_AUTHOR_EMAIL: 338412940+qaq-revival-publisher[bot]@users.noreply.github.com
+      GIT_COMMITTER_NAME: qaq-revival-publisher[bot]
+      GIT_COMMITTER_EMAIL: 338412940+qaq-revival-publisher[bot]@users.noreply.github.com
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          submodules: recursive
+          lfs: true
+          persist-credentials: false
+      - uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Update tracked dependency branches
+        run: node tools/update.cjs
+      - name: Build and run isolated tests
+        run: node tools/build.cjs --test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Arknights-Mod-Tools-windows-x64
+          path: dist/
