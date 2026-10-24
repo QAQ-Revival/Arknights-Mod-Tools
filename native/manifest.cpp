@@ -79,22 +79,24 @@ Manifest readManifest(const fs::path& file, bool verifyHashes) {
     if (hasLink(file) || !fs::is_regular_file(file) || fs::file_size(file) > 4 * 1024 * 1024) throw std::runtime_error("Invalid manifest file");
     std::ifstream stream(file, std::ios::binary); std::string line;
     auto next = [&]() { if (!std::getline(stream, line)) return false; if (!line.empty() && line.back() == '\r') line.pop_back(); return true; };
-    if (!next() || line != "QAQR-ARKNIGHTS-BUNDLES\t1") throw std::runtime_error("Unsupported manifest version");
+    if (!next() || (line != "QAQR-ARKNIGHTS-BUNDLES\t1" && line != "QAQR-ARKNIGHTS-PATCH\t1")) throw std::runtime_error("Unsupported manifest version");
+    const bool partial = line == "QAQR-ARKNIGHTS-PATCH\t1";
     if (!next()) throw std::runtime_error("Missing game path");
     auto fields = split(line);
     if (fields.size() != 2 || fields[0] != "GAME") throw std::runtime_error("Invalid game entry");
-    Manifest result; result.file = fs::absolute(file); result.game = fs::path(wide(fields[1]));
+    Manifest result; result.partial = partial; result.file = fs::absolute(file); result.game = fs::path(wide(fields[1]));
     if (!result.game.is_absolute() || normalized(result.game.filename()) != normalized(L"Arknights.exe") || !fs::is_regular_file(result.game) || hasLink(result.game)) throw std::runtime_error("Invalid Arknights executable");
     if (within(file, result.game.parent_path())) throw std::runtime_error("Game directory must remain read-only");
     std::map<std::wstring, bool> seen;
     while (next()) {
         if (line.empty()) continue;
         fields = split(line);
-        if (fields.size() != 5 || fields[0] != "BUNDLE" || result.entries.size() >= 200) throw std::runtime_error("Invalid bundle entry");
-        Entry entry { relativeFile(fields[1], result.game.parent_path()), relativeFile(fields[2], result.file.parent_path()), fields[3], fields[4] };
-        if (!within(entry.source, result.game.parent_path() / L"Arknights_Data") || within(entry.replacement, result.game.parent_path())) throw std::runtime_error("Invalid bundle boundaries");
-        if (entry.sourceHash.size() != 64 || entry.replacementHash.size() != 64 || !seen.emplace(normalized(entry.source), true).second) throw std::runtime_error("Invalid or duplicate bundle identity");
-        if (verifyHashes && (sha256(entry.source) != entry.sourceHash || sha256(entry.replacement) != entry.replacementHash)) throw std::runtime_error("A game resource or generated bundle changed; prepare Mods again");
+        const bool remove = partial && fields.size() == 3 && fields[0] == "REMOVE";
+        if ((!remove && (fields.size() != 5 || fields[0] != "BUNDLE")) || result.entries.size() >= 4096) throw std::runtime_error("Invalid bundle entry");
+        Entry entry { relativeFile(fields[1], result.game.parent_path()), remove ? fs::path{} : relativeFile(fields[2], result.file.parent_path()), fields[remove ? 2 : 3], remove ? std::string{} : fields[4] };
+        if (!within(entry.source, result.game.parent_path() / L"Arknights_Data") || (!remove && within(entry.replacement, result.game.parent_path()))) throw std::runtime_error("Invalid bundle boundaries");
+        if (entry.sourceHash.size() != 64 || (!remove && entry.replacementHash.size() != 64) || !seen.emplace(normalized(entry.source), true).second) throw std::runtime_error("Invalid or duplicate bundle identity");
+        if (verifyHashes && (sha256(entry.source) != entry.sourceHash || (!remove && sha256(entry.replacement) != entry.replacementHash))) throw std::runtime_error("A game resource or generated bundle changed; prepare Mods again");
         result.entries.push_back(std::move(entry));
     }
     return result;
