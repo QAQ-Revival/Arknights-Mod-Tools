@@ -1,4 +1,5 @@
 #include "manifest.hpp"
+#include "reload-ipc.hpp"
 #include <tlhelp32.h>
 #include <iostream>
 #include <stdexcept>
@@ -17,6 +18,22 @@ bool gameRunning() {
     PROCESSENTRY32W entry{}; entry.dwSize = sizeof(entry);
     if (Process32FirstW(snapshot.value, &entry)) do { if (!_wcsicmp(entry.szExeFile, L"Arknights.exe")) return true; } while (Process32NextW(snapshot.value, &entry));
     return false;
+}
+DWORD gameProcess(const ark::fs::path& game) {
+    Handle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
+    if (snapshot.value == INVALID_HANDLE_VALUE) throw std::runtime_error("Cannot enumerate processes");
+    DWORD found = 0;
+    PROCESSENTRY32W entry{}; entry.dwSize = sizeof(entry);
+    if (Process32FirstW(snapshot.value, &entry)) do {
+        if (_wcsicmp(entry.szExeFile, L"Arknights.exe")) continue;
+        Handle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, entry.th32ProcessID));
+        wchar_t location[32768]{}; DWORD length = 32768;
+        if (!process.value || !QueryFullProcessImageNameW(process.value, 0, location, &length) || ark::normalized(location) != ark::normalized(game)) continue;
+        if (found) throw std::runtime_error("Multiple matching Arknights processes are running");
+        found = entry.th32ProcessID;
+    } while (Process32NextW(snapshot.value, &entry));
+    if (!found) throw std::runtime_error("Start Arknights using QAQR before reloading a Mod");
+    return found;
 }
 std::vector<wchar_t> environment(const std::wstring& manifest) {
     std::map<std::wstring, std::wstring> values;
@@ -81,9 +98,18 @@ DWORD launch(const ark::Manifest& manifest, const ark::fs::path& runtime) {
 int wmain(int argc, wchar_t** argv) {
     try {
         if (argc == 2 && std::wstring(argv[1]) == L"--status") { std::cout << "{\"success\":true,\"running\":" << (gameRunning() ? "true" : "false") << "}"; return 0; }
-        if (argc == 2 && std::wstring(argv[1]) == L"--status") { std::cout << "{\"success\":true,\"running\":" << (gameRunning() ? "true" : "false") << "}"; return 0; }
-        if (argc != 4 || (std::wstring(argv[1]) != L"--check" && std::wstring(argv[1]) != L"--launch") || std::wstring(argv[2]) != L"--manifest") throw std::runtime_error("Usage: ArkLoader --check|--launch --manifest <manifest.tsv>");
+        if ((argc == 4 || argc == 6) && (std::wstring(argv[1]) == L"--reload" || std::wstring(argv[1]) == L"--runtime-status") && std::wstring(argv[2]) == L"--manifest") {
+            const auto manifest = ark::readManifest(argv[3], false);
+            const bool reload = std::wstring(argv[1]) == L"--reload";
+            if (reload && !manifest.partial) throw std::runtime_error("Live reload requires a scoped patch manifest");
+            const auto pid = gameProcess(manifest.game);
+            if (argc == 6 && (std::wstring(argv[4]) != L"--pid" || std::to_wstring(pid) != argv[5])) throw std::runtime_error("The game restarted while the reload was being prepared; retry the Mod reload");
+            std::cout << ark::runtimeRequest(pid, reload ? manifest.file.wstring() : L"");
+            return 0;
+        }
+        if (argc != 4 || (std::wstring(argv[1]) != L"--check" && std::wstring(argv[1]) != L"--launch") || std::wstring(argv[2]) != L"--manifest") throw std::runtime_error("Usage: ArkLoader --check|--launch|--reload|--runtime-status --manifest <manifest.tsv>");
         const auto manifest = ark::readManifest(argv[3], true);
+        if (manifest.partial && std::wstring(argv[1]) == L"--launch") throw std::runtime_error("Cannot launch from a partial reload patch");
         wchar_t executable[32768]{}; GetModuleFileNameW(nullptr, executable, 32768);
         auto runtime = ark::fs::path(executable).parent_path() / L"ArkRuntime.dll";
         if (!ark::fs::is_regular_file(runtime) || ark::hasLink(runtime)) throw std::runtime_error("Built runtime DLL is missing");

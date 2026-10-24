@@ -51,6 +51,8 @@ compile(['../native/manifest.cpp', '../native/launcher.cpp'], [...common, '/Fe..
 if (process.argv.includes('--test')) {
   compile(['../native/manifest.cpp', '../tests/native_tests.cpp'], [...common, '/Fenative/NativeTests.exe', '/link', '/Brepro']);
   console.log(run(path.join(objects, 'NativeTests.exe'), [path.join(build, 'manifest-test-' + Date.now())]));
+  compile(['../native/manifest.cpp', '../tests/runtime_tests.cpp'], [...common, '/Fenative/RuntimeTests.exe', ...hookObjects, '/link', '/Brepro']);
+  console.log(run(path.join(objects, 'RuntimeTests.exe'), [path.join(build, 'runtime-test-' + Date.now())], { timeout: 60000 }));
 }
 const packages = process.env.QAQR_PY_PACKAGES || path.join(root, '.cache/packages');
 if (!fs.existsSync(path.join(packages, 'PyInstaller'))) console.log(run(python, ['-m', 'pip', 'install', '--target', packages, '-r', 'python/requirements.txt']));
@@ -77,8 +79,9 @@ for (const dir of fs.readdirSync(packages).filter(name => name.endsWith('.dist-i
 const inventory = {};
 for (const entry of fs.readdirSync(dist, { recursive: true, withFileTypes: true })) if (entry.isFile()) {
   const file = path.join(entry.parentPath, entry.name), relative = path.relative(dist, file).split(path.sep).join('/');
+  if (relative === 'component.json') continue;
   if (/fmod|M4ALauncher|Bootstrapper\.dll/i.test(relative)) throw Error('Opaque or unused audio binary in output: ' + relative);
   inventory[relative] = hash(file);
 }
-fs.writeFileSync(path.join(dist, 'component.json'), JSON.stringify({ schemaVersion: 1, protocol: 1, source: pins.repository, sourceCommit, sourceDirty, dependencies, buildStatus: 'compiled', gameRuntimeValidated: false, capabilities: ['current-pc-bundle-rebuild', 'assetbundle-file-redirection'], files: inventory }, null, 2));
+fs.writeFileSync(path.join(dist, 'component.json'), JSON.stringify({ schemaVersion: 1, protocol: 1, source: pins.repository, sourceCommit, sourceDirty, dependencies, buildStatus: 'compiled', gameRuntimeValidated: false, capabilities: ['current-pc-bundle-rebuild', 'assetbundle-file-redirection', 'single-mod-reload-v2'], files: inventory }, null, 2));
 console.log('Built source-controlled loader and offline worker; no game executed.');

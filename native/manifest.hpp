@@ -8,7 +8,7 @@
 namespace ark {
 namespace fs = std::filesystem;
 struct Entry { fs::path source, replacement; std::string sourceHash, replacementHash; };
-struct Manifest { fs::path file, game; std::vector<Entry> entries; };
+struct Manifest { fs::path file, game; std::vector<Entry> entries; bool partial = false; };
 std::wstring normalized(const fs::path& file);
 bool within(const fs::path& file, const fs::path& root);
 bool hasLink(const fs::path& file);

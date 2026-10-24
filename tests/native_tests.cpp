@@ -23,6 +23,17 @@ int wmain(int argc, wchar_t** argv) {
         write("test.ab", std::string(64, '0')); if (!refuses()) throw std::runtime_error("Changed output was accepted");
         write("test.ab", ark::sha256(replacement)); std::ofstream(original) << "game update"; if (!refuses()) throw std::runtime_error("Changed game base was accepted");
         if (ark::within(root / L"output-other/file.ab", output)) throw std::runtime_error("Prefix sibling accepted");
+        {
+            std::ofstream bulk(file, std::ios::binary | std::ios::trunc);
+            bulk << "QAQR-ARKNIGHTS-BUNDLES\t1\nGAME\t" << ark::utf8((game / L"Arknights.exe").wstring()) << "\n";
+            for (int index = 0; index < 201; ++index) {
+                auto name = "bulk-" + std::to_string(index) + ".ab";
+                auto input = game / L"Arknights_Data/skinpack" / name;
+                std::ofstream(input) << "fixture";
+                bulk << "BUNDLE\tArknights_Data/skinpack/" << name << "\ttest.ab\t" << ark::sha256(input) << "\t" << ark::sha256(replacement) << "\n";
+            }
+        }
+        if (ark::readManifest(file, true).entries.size() != 201) throw std::runtime_error("Large valid manifest rejected");
         std::cout << "Manifest boundaries, source/replacement hashes, and relative paths verified; no game executed.\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what(); return 1; }
