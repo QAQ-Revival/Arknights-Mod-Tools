@@ -66,9 +66,17 @@ const original = fs.readFileSync(exportFile, 'utf8');
 if ((original.match(/AudioClipConverter/g) || []).length !== 2) throw Error('Review the audio exclusion patch for this UnityPy revision');
 fs.writeFileSync(exportFile, original.split('\n').filter(line => !line.includes('AudioClipConverter')).join('\n'));
 const workerEnv = { ...process.env, PYTHONPATH: [staged, packages].join(path.delimiter), PYINSTALLER_CONFIG_DIR: path.join(root, '.cache/pyinstaller') };
+try { run(python, ['-c', 'import _brotli, lz4.block, PIL.Image, texture2ddecoder'], { env: workerEnv }); }
+catch { throw Error('Python native dependencies do not match the build interpreter. Set QAQR_PYTHON to the interpreter used for QAQR_PY_PACKAGES, or install the pinned requirements for this interpreter.'); }
 const excluded = ['fmod_toolkit', 'pyfmodex', 'UnityPy.export.AudioClipConverter', 'tkinter', 'numpy', 'pandas', 'openpyxl', 'lxml', 'scipy', 'matplotlib'];
 console.log(run(python, ['-m', 'PyInstaller', '--noconfirm', '--clean', '--onedir', '--name', 'ArknightsTools', '--distpath', dist, '--workpath', path.join(build, 'python-freeze'), '--specpath', build, '--paths', staged, '--paths', packages, '--collect-all', 'UnityPy', '--collect-all', 'texture2ddecoder', '--collect-data', 'archspec', ...excluded.flatMap(name => ['--exclude-module', name]), 'python/worker.py'], { env: workerEnv }));
+const smokeRoot = path.join(build, 'worker-smoke'); fresh(smokeRoot);
+const workerSmoke = spawnSync(path.join(dist, 'ArknightsTools/ArknightsTools.exe'), [], { cwd: root, windowsHide: true, encoding: 'utf8', input: JSON.stringify({ source: smokeRoot }), timeout: 30000 });
+let smokeResponse;
+try { smokeResponse = JSON.parse(workerSmoke.stdout || ''); } catch { throw Error('The frozen offline worker did not start: ' + (workerSmoke.error?.message || workerSmoke.stderr || 'empty output')); }
+if (smokeResponse.success !== false || typeof smokeResponse.error !== 'string') throw Error('Unexpected frozen offline worker response');
 const licenses = path.join(dist, 'licenses'); fs.mkdirSync(licenses, { recursive: true });
+require('../cursor/build-qaqr.cjs').build({ output: path.join(dist, 'cursor'), test: process.argv.includes('--test') });
 fs.copyFileSync(path.join(root, 'LICENSE'), path.join(licenses, 'Arknights-Mod-Tools-LICENSE.txt'));
 fs.copyFileSync(path.join(root, 'vendor/minhook/LICENSE.txt'), path.join(licenses, 'MinHook-LICENSE.txt'));
 fs.copyFileSync(path.join(root, 'vendor/UnityPy/LICENSE'), path.join(licenses, 'UnityPy-LICENSE.txt'));
