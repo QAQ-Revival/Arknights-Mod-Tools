@@ -1,6 +1,7 @@
 """Rebuild external PC bundles from current local originals, without game writes."""
 import hashlib
 import io
+import json
 import tempfile
 from pathlib import Path
 
@@ -26,6 +27,15 @@ def build_bundles(request):
     if output.exists() or output.is_relative_to(source) or source.is_relative_to(output) or output.is_relative_to(game.parent):
         raise ValueError("Output must be new and outside the game and Mod library")
     inputs = source_files(source, max_files=100000)
+    # A user confirmation approves exact resource pairs, including their bytes.
+    # Changed files and ordinary standalone conversions still reject overlaps.
+    marker = source / '.qaqr-m4a.json'
+    deployment = json.loads(marker.read_text(encoding='utf-8')) if marker.is_file() else {}
+    approved_pairs = set()
+    if deployment.get('owner') == 'qaqr-arknights-v1':
+        approved_pairs = {tuple(sorted((item['file'], item['sha256']) for item in pair)) for pair in deployment.get('approvedResourcePairs', [])}
+        priority = {name: index for index, name in enumerate(deployment.get('modOrder', []))}
+        inputs.sort(key=lambda file: (priority.get(file.relative_to(source).parts[0], -1), file.as_posix()))
     bindings = read_bindings(source, max_manifests=10000)
     resources = []
     by_key = {}
@@ -121,10 +131,13 @@ def build_bundles(request):
                 oid = identity(record['object'])
                 file_hash = digest(file)
                 if oid in written:
-                    if written[oid] != file_hash:
+                    previous_file, previous_hash = written[oid]
+                    pair = tuple(sorted(((previous_file, previous_hash), (file.relative_to(source).as_posix(), file_hash))))
+                    if previous_hash != file_hash and pair not in approved_pairs:
                         raise ValueError('Conflicting modifications to the same PC object: ' + relative + ' / ' + record['target'])
-                    continue
-                written[oid] = file_hash
+                    if previous_hash == file_hash:
+                        continue
+                written[oid] = (file.relative_to(source).as_posix(), file_hash)
                 data = record["object"].read()
                 if record["kind"] == "texture":
                     with Image.open(file) as image:

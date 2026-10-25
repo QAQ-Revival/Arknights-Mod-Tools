@@ -115,6 +115,7 @@ int wmain(int argc, wchar_t** argv) {
         auto send = [&](const ark::fs::path& file) { return ark::runtimeRequest(GetCurrentProcessId(), file.wstring()); };
         auto first = patch(L"first", a);
         check(send(first).find("\"success\":true") != std::string::npos, "Scoped patch rejected");
+        check(fixture::attaches.load() == fixture::detaches.load(), "Idle reload server kept a thread registered and would block Unity shutdown");
         auto newA = static_cast<fixture::Bundle*>(::loadAsset(oldA, nullptr, nullptr));
         check(newA->file == first.parent_path() / L"changed.ab", "Cached bundle did not follow its replacement");
         check(oldA->unloaded && !oldA->destroyed, "Displayed objects were destroyed");
@@ -148,7 +149,12 @@ int wmain(int argc, wchar_t** argv) {
         check(ark::normalized(static_cast<fixture::Bundle*>(::loadAsset(oldA, nullptr, nullptr))->file) == ark::normalized(a), "Disabling did not restore the original bundle");
         check(ark::sha256(a) == baselineHash && fixture::reads[ark::normalized(b)] == 1, "Original or unrelated resources changed");
         check(send(statusDirectory / L"outside.tsv").find("\"success\":false") != std::string::npos, "Out-of-scope patch accepted");
-        std::cout << "Runtime: deferred Unity startup, foreign-thread GC registration, scoped reload, cached wrappers and async reads verified; no game executed.\n" << std::flush;
+        originalShutdown = [] { fixture::registered = false; };
+        shutdownRuntime();
+        check(detaching.load() && !fixture::registered, "Runtime shutdown did not precede domain teardown");
+        { RuntimeThread stopped; check(!stopped, "Resource hook re-entered the stopped VM"); }
+        check(fixture::attaches.load() == fixture::detaches.load(), "Reload thread registration leaked at shutdown");
+        std::cout << "Runtime: deferred Unity startup, scoped GC registration, idle server detachment, shutdown, scoped reload and async reads verified; no game executed.\n" << std::flush;
         ExitProcess(0);
     } catch (const std::exception& error) { std::cerr << error.what() << '\n' << std::flush; ExitProcess(1); }
 }

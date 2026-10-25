@@ -1,0 +1,7 @@
+{
+  "repository": "https://github.com/assfafa/arknights-system-cursor",
+  "revision": "1d1b2d5bf3ed92d069c099f21b27bbae194649ac",
+  "license": "MIT",
+  "upstreamVersion": "1.0.0",
+  "integration": "The upstream Core and CLI sources are kept unchanged. QAQR builds the CLI and calls status, enable and restore with an explicit per-installation backup root."
+}

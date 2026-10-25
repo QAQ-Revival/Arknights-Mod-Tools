@@ -42,13 +42,14 @@ std::atomic<ULONGLONG> nextInitializationAttempt = 0;
 struct BindingsNotReady : std::runtime_error { using std::runtime_error::runtime_error; };
 int (*originalInit)(const char*) = nullptr;
 int (*originalInitUtf16)(const wchar_t*) = nullptr;
+void (*originalShutdown)() = nullptr;
 void initializeManagedRuntime();
 void (*managedInitializer)() = initializeManagedRuntime;
 
 void enterManagedRuntime() {
     // domain_get may allocate its singleton. Never poll it from a native
     // bootstrap thread: wait for Unity's initialization or a registered VM call.
-    if (initializationState.load() != 0 || initializationDepth.load() != 0 || GetTickCount64() < nextInitializationAttempt.load() || !threadCurrent || !threadCurrent()) return;
+    if (detaching.load() || initializationState.load() != 0 || initializationDepth.load() != 0 || GetTickCount64() < nextInitializationAttempt.load() || !threadCurrent || !threadCurrent()) return;
     int expected = 0;
     if (!initializationState.compare_exchange_strong(expected, 1)) return;
     try {
@@ -84,6 +85,12 @@ int initializeUtf16(const wchar_t* name) {
 void* invokeManaged(const void* method, void* object, void** parameters, void** exception) {
     enterManagedRuntime();
     return invoke(method, object, parameters, exception);
+}
+void shutdownRuntime() {
+    // Unity tears its domain down before DLL_PROCESS_DETACH. Resource hooks
+    // must stop entering the VM during that earlier shutdown phase.
+    detaching.store(true);
+    originalShutdown();
 }
 
 // Native Unity workers can enter an icall without being IL2CPP threads. Any
@@ -310,8 +317,9 @@ std::string response(size_t changed = 0) {
         ",\"lastPatch\":" + ark::jsonString(ark::utf8(lastPatch)) + ",\"changedBundles\":" + std::to_string(changed) + ",\"mappedBundles\":" + std::to_string(targets.size()) + ",\"refreshRequired\":true}";
 }
 void serve() {
-    RuntimeThread thread;
-    if (!thread) throw std::runtime_error("Could not register the IL2CPP reload thread");
+    // Managed operations register only for their own scope. Keeping this
+    // server attached while waiting for a pipe makes IL2CPP shutdown wait for
+    // a thread that will never detach.
     for (;;) {
         ark::WinHandle pipe(CreateNamedPipeW(ark::pipeName(GetCurrentProcessId()).c_str(), PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
             PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, 1, 65536, 65536, 0, nullptr));
@@ -333,6 +341,7 @@ void serve() {
             if (request.find(L'\0') != std::wstring::npos) throw std::runtime_error("Invalid reload path");
             if (request.empty()) result = response();
             else {
+                if (detaching.load()) throw std::runtime_error("Unity is shutting down");
                 if (!reloadAvailable) throw std::runtime_error("This game build does not expose the required single-Mod reload interfaces");
                 if (!ark::within(request, statusDirectory / L"reloads")) throw std::runtime_error("Reload patch must be inside the active runtime's reload directory");
                 auto patch = ark::readManifest(request, true);
@@ -445,6 +454,11 @@ DWORD WINAPI initialize(void*) {
             MH_QueueEnableHook(reinterpret_cast<void*>(call)) != MH_OK) throw std::runtime_error("Could not observe the managed runtime entry");
         auto init = GetProcAddress(gameAssembly, "il2cpp_init");
         auto initUtf16 = GetProcAddress(gameAssembly, "il2cpp_init_utf16");
+        auto shutdown = GetProcAddress(gameAssembly, "il2cpp_shutdown");
+        if (shutdown) {
+            if (MH_CreateHook(reinterpret_cast<void*>(shutdown), reinterpret_cast<void*>(&shutdownRuntime), reinterpret_cast<void**>(&originalShutdown)) != MH_OK ||
+                MH_QueueEnableHook(reinterpret_cast<void*>(shutdown)) != MH_OK) throw std::runtime_error("Could not observe managed runtime shutdown");
+        }
         if (init && MH_CreateHook(reinterpret_cast<void*>(init), reinterpret_cast<void*>(&initializeUtf8), reinterpret_cast<void**>(&originalInit)) == MH_OK) MH_QueueEnableHook(reinterpret_cast<void*>(init));
         if (initUtf16 && initUtf16 != init && MH_CreateHook(reinterpret_cast<void*>(initUtf16), reinterpret_cast<void*>(&initializeUtf16), reinterpret_cast<void**>(&originalInitUtf16)) == MH_OK) MH_QueueEnableHook(reinterpret_cast<void*>(initUtf16));
         ark::writeStatus(statusDirectory, "waiting-managed-init", "Waiting for Unity to initialize IL2CPP; domain_get has not been called");
