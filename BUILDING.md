@@ -9,9 +9,9 @@ is not on PATH. `QAQR_PY_PACKAGES` may point to a prepared directory containing
 the packages pinned in `python/requirements.txt`.
 
 The loader and runtime DLL are compiled from `native/` plus the MinHook submodule.
-UnityPy is imported from its source checkout. During staging, its eager
-AudioClipConverter import is removed from `export/__init__.py`; the upstream
-checkout is unchanged. AudioClipConverter, fmod_toolkit and pyfmodex are excluded
+UnityPy is imported unchanged from the QAQ-Revival fork, where the eager
+AudioClipConverter import is already excluded. No build-time source patch is
+applied. AudioClipConverter, fmod_toolkit and pyfmodex are excluded
 from the frozen worker, and the output inventory rejects FMOD and legacy M4A
 binaries. This build supports image and Spine conversion, not AudioClip decoding.
 
@@ -23,7 +23,7 @@ compiler/runtime components are external platform dependencies.
 files. Source changes require rebuilding; do not edit the built runtime manually.
 No private credentials, game data or game art belong in this repository.
 
-Each submodule tracks the branch declared in `.gitmodules` and `sources.json`.
+Each submodule tracks its organization fork branch declared in `.gitmodules` and `sources.json`.
 Use `git submodule update --init --remote --recursive` to select each branch's
 latest commit, then rebuild and run verification. The superproject gitlinks and
 build manifest record the checkout used for that build; no tag is enforced.
