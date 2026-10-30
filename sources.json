@@ -6,5 +6,10 @@
     "Ark-Unpacker": "v5.x"
   },
   "unityReference": "https://github.com/Unity-Technologies/UnityCsReference/blob/2021.3/Modules/AssetBundle/Managed/AssetBundle.bindings.cs",
-  "audioPolicy": "AudioClip decoding is excluded. No FMOD SDK or runtime is included. Existing WAV Mods are not supported by the experimental source loader."
+  "audioPolicy": "AudioClip decoding is excluded. No FMOD SDK or runtime is included. Existing WAV Mods are not supported by the experimental source loader.",
+  "submoduleRepositories": {
+    "minhook": "QAQ-Revival/minhook",
+    "UnityPy": "QAQ-Revival/UnityPy",
+    "Ark-Unpacker": "QAQ-Revival/Ark-Unpacker"
+  }
 }

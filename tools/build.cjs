@@ -62,9 +62,7 @@ const staged = path.join(build, 'python'); fresh(staged);
 fs.cpSync(path.join(root, 'vendor/UnityPy/UnityPy'), path.join(staged, 'UnityPy'), { recursive: true });
 if (fs.readFileSync(path.join(staged, 'UnityPy/resources/lzma.tpk')).subarray(0, 42).toString().startsWith('version https://git-lfs.github.com/spec/')) throw Error('Fetch UnityPy Git LFS resources before building');
 const exportFile = path.join(staged, 'UnityPy/export/__init__.py');
-const original = fs.readFileSync(exportFile, 'utf8');
-if ((original.match(/AudioClipConverter/g) || []).length !== 2) throw Error('Review the audio exclusion patch for this UnityPy revision');
-fs.writeFileSync(exportFile, original.split('\n').filter(line => !line.includes('AudioClipConverter')).join('\n'));
+if (/AudioClipConverter/.test(fs.readFileSync(exportFile, 'utf8'))) throw Error('Use the reviewed QAQ-Revival/UnityPy fork with audio decoding excluded');
 const workerEnv = { ...process.env, PYTHONPATH: [staged, packages].join(path.delimiter), PYINSTALLER_CONFIG_DIR: path.join(root, '.cache/pyinstaller') };
 try { run(python, ['-c', 'import _brotli, lz4.block, PIL.Image, texture2ddecoder'], { env: workerEnv }); }
 catch { throw Error('Python native dependencies do not match the build interpreter. Set QAQR_PYTHON to the interpreter used for QAQR_PY_PACKAGES, or install the pinned requirements for this interpreter.'); }
