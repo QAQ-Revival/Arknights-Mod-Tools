@@ -48,5 +48,42 @@ class ScopedReload(unittest.TestCase):
                 _bundle_index.cache_clear()
 
 
+    def test_one_patch_covers_several_disabled_mods(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get('QAQR_TEST_TMP')) as directory:
+            root = Path(directory)
+            game = root / 'game' / 'Arknights.exe'
+            game.parent.mkdir()
+            game.write_bytes(b'never executed')
+            bundles = game.parent / 'Arknights_Data/StreamingAssets/AB/Windows/skinpack'
+            bundles.mkdir(parents=True)
+            for name in ('a.ab', 'b.ab', 'c.ab'):
+                (bundles / name).write_bytes(b'original')
+            source, first, second = root / 'enabled', root / 'first', root / 'second'
+            for folder, name, bundle in ((source, 'b.png', 'skinpack/b.ab'), (first, 'a.png', 'skinpack/a.ab'), (second, 'c.png', 'skinpack/c.ab')):
+                folder.mkdir()
+                (folder / name).write_bytes(b'pixels')
+                (folder / '.qaqr-resources.json').write_text(json.dumps({'schemaVersion': 1, 'resources': [{'file': name, 'target': name, 'bundle': bundle}]}))
+            read = []
+            def records(file, return_env=False):
+                read.append(file.name)
+                self.assertIn(file.name, ('a.ab', 'c.ab'), 'An unrelated bundle was parsed')
+                result = ([{'target': file.stem + '.png'}], [], [19])
+                return (*result, None) if return_env else result
+            try:
+                with patch('bundle_builder.bundle_records', records):
+                    output = root / 'patch'
+                    result = build_bundles({'source': str(source), 'scopeSources': [str(first), str(second)], 'gamePath': str(game), 'output': str(output), 'affectedBundles': ['skinpack/a.ab', 'skinpack/c.ab']})
+                self.assertEqual(result['bundles'], [])
+                self.assertEqual(sorted(item['logical'] for item in result['removedBundles']), ['skinpack/a.ab', 'skinpack/c.ab'])
+                manifest = (output / 'manifest.tsv').read_text()
+                self.assertTrue(manifest.startswith('QAQR-ARKNIGHTS-PATCH\t1\n'))
+                self.assertNotIn('b.ab', manifest)
+                self.assertEqual(sorted(read), ['a.ab', 'c.ab'])
+                with self.assertRaises(ValueError):
+                    build_bundles({'source': str(source), 'scopeSources': [], 'gamePath': str(game), 'output': str(root / 'empty')})
+            finally:
+                _bundle_index.cache_clear()
+
+
 if __name__ == '__main__':
     unittest.main()

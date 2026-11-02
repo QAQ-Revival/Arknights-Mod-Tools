@@ -53,36 +53,46 @@ def build_bundles(request):
     if len(ids) > 1000:
         raise ValueError("Too many operators in a single preparation")
     requested = [item['bundle'] or item['key'] for item in resources]
-    scoped = request.get('scopeSource') is not None
+    # One patch may cover several toggled Mods (scopeSources); each must bind
+    # unambiguously, or the caller retries them as separate patches.
+    scopes = request.get('scopeSources')
+    if scopes is None and request.get('scopeSource') is not None:
+        scopes = [request['scopeSource']]
+    scoped = scopes is not None
     affected = set()
     if scoped:
+        if not isinstance(scopes, list) or not scopes or len(scopes) > 200:
+            raise ValueError('Invalid scope list')
         previous = request.get('affectedBundles', [])
         if not isinstance(previous, list) or len(previous) > 200:
             raise ValueError('Invalid affected bundle list')
         affected.update(relative_path(value).casefold() for value in previous)
-        scope = Path(request['scopeSource']).resolve(strict=True)
-        scope_bindings = read_bindings(scope)
-        scope_files = [file for file in source_files(scope) if file.suffix.lower() in ('.png', '.skel', '.atlas', '.json')]
-        scope_items = [(normalized(scope_bindings.get(file, {}).get('target', file.name)), scope_bindings.get(file, {}).get('bundle')) for file in scope_files]
-        scope_ids = {match.lower() for file in scope_files for match in CHARACTER.findall(file.name)}
-        scope_ids.update(character_hints(request))
-        scope_requested = [bundle or key for key, bundle in scope_items]
-        scope_matches = {item: set() for item in scope_items}
-        if scope_items and all(bundle for _, bundle in scope_items):
-            for item in scope_items:
-                scope_matches[item].add(item[1].casefold())
-        else:
-            for relative, original in current_bundles(roots, scope_ids, scope_requested):
-                records, _, _ = bundle_records(original)
-                keys = {normalized(record['target']) for record in records}
+        for scope_source in scopes:
+            scope = Path(scope_source).resolve(strict=True)
+            scope_bindings = read_bindings(scope)
+            scope_files = [file for file in source_files(scope) if file.suffix.lower() in ('.png', '.skel', '.atlas', '.json')]
+            scope_items = [(normalized(scope_bindings.get(file, {}).get('target', file.name)), scope_bindings.get(file, {}).get('bundle')) for file in scope_files]
+            scope_ids = {match.lower() for file in scope_files for match in CHARACTER.findall(file.name)}
+            scope_ids.update(character_hints(request))
+            scope_requested = [bundle or key for key, bundle in scope_items]
+            scope_matches = {item: set() for item in scope_items}
+            if scope_items and all(bundle for _, bundle in scope_items):
                 for item in scope_items:
-                    key, bundle = item
-                    if key in keys and (not bundle or bundle.casefold() == relative.casefold()):
-                        scope_matches[item].add(relative.casefold())
-        if any(len(matches) != 1 for matches in scope_matches.values()):
-            raise ValueError('The selected Mod needs unambiguous current PC resource bindings; diagnose and convert it first')
-        for matches in scope_matches.values():
-            affected.update(matches)
+                    scope_matches[item].add(item[1].casefold())
+            else:
+                for relative, original in current_bundles(roots, scope_ids, scope_requested):
+                    records, _, _ = bundle_records(original)
+                    keys = {normalized(record['target']) for record in records}
+                    for item in scope_items:
+                        key, bundle = item
+                        if key in keys and (not bundle or bundle.casefold() == relative.casefold()):
+                            scope_matches[item].add(relative.casefold())
+            if any(len(matches) != 1 for matches in scope_matches.values()):
+                raise ValueError('The selected Mod needs unambiguous current PC resource bindings; diagnose and convert it first: ' + scope.name)
+            for matches in scope_matches.values():
+                affected.update(matches)
+        if len(affected) > 200:
+            raise ValueError('Too many bundles in a single patch')
         requested = sorted(affected)
     loaded = []
     matches = {item['file']: [] for item in resources if not scoped or (item['bundle'] and item['bundle'].casefold() in affected)}
