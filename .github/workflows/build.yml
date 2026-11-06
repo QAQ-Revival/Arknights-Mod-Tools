@@ -29,6 +29,22 @@ jobs:
           python-version: '3.12'
       - name: Update tracked dependency branches
         run: node tools/update.cjs
+      # The native window fixture starts with a fixed 1280px window. The
+      # runner's 1024x768 desktop clamps it when the resize border is attached.
+      - name: Set up a desktop for native window tests
+        shell: pwsh
+        run: |
+          if (Get-Command Set-DisplayResolution -ErrorAction SilentlyContinue) {
+            Set-DisplayResolution -Width 1920 -Height 1080 -Force
+          } else {
+            Add-Type -Path tools/ci/display-resolution.cs
+            $result = [QaqrDisplay]::Set(1920, 1080)
+            if ($result -ne 0) { throw "ChangeDisplaySettings returned $result" }
+          }
+          Add-Type -AssemblyName System.Windows.Forms
+          $area = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+          "Display work area: $($area.Width)x$($area.Height)"
+          if ($area.Width -lt 1440 -or $area.Height -lt 900) { throw "The runner display is too small for the native window tests" }
       - name: Build and run isolated tests
         run: node tools/build.cjs --test
       - uses: actions/upload-artifact@v4
