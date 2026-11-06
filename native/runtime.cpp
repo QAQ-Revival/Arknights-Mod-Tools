@@ -1,5 +1,7 @@
 #include "manifest.hpp"
 #include "reload-ipc.hpp"
+#include "window.hpp"
+#include "input.hpp"
 #include <MinHook.h>
 #include <memory>
 #include <mutex>
@@ -310,11 +312,18 @@ void* loadAssetAsync(void* b, void* n, void* t) { return asset(originalAssetAsyn
 void* subAssets(void* b, void* n, void* t) { return asset(originalSubAssets, b, n, t, false); }
 void* subAssetsAsync(void* b, void* n, void* t) { return asset(originalSubAssetsAsync, b, n, t, true); }
 
+std::string mouse() {
+    const auto stats = ark::mouseCoalescingStats();
+    return std::string("{\"active\":") + (stats.active ? "true" : "false") + ",\"redirected\":" + (stats.redirected ? "true" : "false") +
+        ",\"records\":" + std::to_string(stats.records) + ",\"delivered\":" + std::to_string(stats.delivered) +
+        ",\"relayed\":" + std::to_string(stats.relayed) + ",\"deferredMoves\":" + std::to_string(stats.deferred) + "}";
+}
 std::string response(size_t changed = 0) {
     std::lock_guard lock(stateMutex);
     return "{\"success\":true,\"protocol\":" + std::string(reloadAvailable ? "2" : "1") + ",\"pid\":" + std::to_string(GetCurrentProcessId()) +
         ",\"manifest\":" + ark::jsonString(ark::utf8((statusDirectory / L"manifest.tsv").wstring())) +
-        ",\"lastPatch\":" + ark::jsonString(ark::utf8(lastPatch)) + ",\"changedBundles\":" + std::to_string(changed) + ",\"mappedBundles\":" + std::to_string(targets.size()) + ",\"refreshRequired\":true}";
+        ",\"lastPatch\":" + ark::jsonString(ark::utf8(lastPatch)) + ",\"changedBundles\":" + std::to_string(changed) + ",\"mappedBundles\":" + std::to_string(targets.size()) + ",\"refreshRequired\":true" +
+        ",\"mouseCoalescing\":" + mouse() + "}";
 }
 void serve() {
     // Managed operations register only for their own scope. Keeping this
@@ -439,6 +448,14 @@ DWORD WINAPI initialize(void*) {
         startupManifest = ark::readManifest(location, true);
         if (startupManifest.partial || ark::normalized(startupManifest.game) != ark::normalized(executable)) return 0;
         statusDirectory = startupManifest.file.parent_path();
+        wchar_t resize[2]{};
+        if (GetEnvironmentVariableW(L"QAQR_ARKNIGHTS_RESIZABLE_WINDOW", resize, 2) == 1 && resize[0] == L'1') {
+            HMODULE module = nullptr;
+            if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+                reinterpret_cast<LPCWSTR>(&ark::startWindowResize), &module)) ark::startWindowResize(module);
+        }
+        wchar_t coalesce[2]{};
+        if (GetEnvironmentVariableW(L"QAQR_ARKNIGHTS_COALESCE_MOUSE", coalesce, 2) == 1 && coalesce[0] == L'1') ark::startMouseCoalescing();
         ark::writeStatus(statusDirectory, "waiting-module", "Waiting for GameAssembly; no managed APIs have been called");
         for (int attempt = 0; attempt < 600 && !gameAssembly; ++attempt) { gameAssembly = GetModuleHandleW(L"GameAssembly.dll"); if (!gameAssembly) Sleep(100); }
         if (!gameAssembly) throw std::runtime_error("GameAssembly.dll did not load");
@@ -469,7 +486,7 @@ DWORD WINAPI initialize(void*) {
 }
 extern "C" __declspec(dllexport) const char* QAQR_RuntimeProtocol() { return "qaqr-arknights-bundles-2"; }
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
-    if (reason == DLL_PROCESS_DETACH) detaching.store(true);
+    if (reason == DLL_PROCESS_DETACH) { detaching.store(true); ark::stopWindowResize(); }
     if (reason == DLL_PROCESS_ATTACH) { DisableThreadLibraryCalls(instance); HANDLE thread = CreateThread(nullptr, 0, initialize, nullptr, 0, nullptr); if (thread) CloseHandle(thread); }
     return TRUE;
 }

@@ -35,16 +35,25 @@ DWORD gameProcess(const ark::fs::path& game) {
     if (!found) throw std::runtime_error("Start Arknights using QAQR before reloading a Mod");
     return found;
 }
-std::vector<wchar_t> environment(const std::wstring& manifest) {
+struct LaunchOptions {
+    bool resizableWindow = false, coalesceMouse = false;
+};
+bool controlled(const std::wstring& name) {
+    for (auto key : {L"QAQR_ARKNIGHTS_MANIFEST", L"QAQR_ARKNIGHTS_RESIZABLE_WINDOW", L"QAQR_ARKNIGHTS_COALESCE_MOUSE"}) if (!_wcsicmp(name.c_str(), key)) return true;
+    return false;
+}
+std::vector<wchar_t> environment(const std::wstring& manifest, const LaunchOptions& options) {
     std::map<std::wstring, std::wstring> values;
     wchar_t* block = GetEnvironmentStringsW();
     if (!block) throw std::runtime_error("Cannot read process environment");
     for (const wchar_t* item = block; *item; item += wcslen(item) + 1) {
         std::wstring line(item); auto separator = line.find(L'=', line[0] == L'=' ? 1 : 0);
-        if (separator != std::wstring::npos && _wcsicmp(line.substr(0, separator).c_str(), L"QAQR_ARKNIGHTS_MANIFEST")) values.emplace(line.substr(0, separator), line.substr(separator + 1));
+        if (separator != std::wstring::npos && !controlled(line.substr(0, separator))) values.emplace(line.substr(0, separator), line.substr(separator + 1));
     }
     FreeEnvironmentStringsW(block);
     values[L"QAQR_ARKNIGHTS_MANIFEST"] = manifest;
+    values[L"QAQR_ARKNIGHTS_RESIZABLE_WINDOW"] = options.resizableWindow ? L"1" : L"0";
+    values[L"QAQR_ARKNIGHTS_COALESCE_MOUSE"] = options.coalesceMouse ? L"1" : L"0";
     std::vector<wchar_t> output;
     for (const auto& [key, value] : values) { auto line = key + L"=" + value; output.insert(output.end(), line.begin(), line.end()); output.push_back(0); }
     output.push_back(0); return output;
@@ -68,10 +77,10 @@ LPTHREAD_START_ROUTINE remoteLoadLibrary(DWORD pid) {
     }
     throw std::runtime_error("Cannot resolve the new process loader; no fallback is attempted");
 }
-DWORD launch(const ark::Manifest& manifest, const ark::fs::path& runtime) {
+DWORD launch(const ark::Manifest& manifest, const ark::fs::path& runtime, const LaunchOptions& options) {
     Handle mutex(CreateMutexW(nullptr, TRUE, L"Local\\QAQR_Arknights_Source_Launch"));
     if (!mutex.value || GetLastError() == ERROR_ALREADY_EXISTS || gameRunning()) throw std::runtime_error("Close Arknights before changing or launching Mods");
-    auto env = environment(manifest.file.wstring());
+    auto env = environment(manifest.file.wstring(), options);
     auto command = L"\"" + manifest.game.wstring() + L"\"";
     STARTUPINFOW startup{}; startup.cb = sizeof(startup); PROCESS_INFORMATION process{};
     if (!CreateProcessW(manifest.game.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_UNICODE_ENVIRONMENT, env.data(), manifest.game.parent_path().c_str(), &startup, &process)) throw std::runtime_error("Could not start the selected game");
@@ -107,7 +116,15 @@ int wmain(int argc, wchar_t** argv) {
             std::cout << ark::runtimeRequest(pid, reload ? manifest.file.wstring() : L"");
             return 0;
         }
-        if (argc != 4 || (std::wstring(argv[1]) != L"--check" && std::wstring(argv[1]) != L"--launch") || std::wstring(argv[2]) != L"--manifest") throw std::runtime_error("Usage: ArkLoader --check|--launch|--reload|--runtime-status --manifest <manifest.tsv>");
+        const char* usage = "Usage: ArkLoader --check|--launch|--reload|--runtime-status --manifest <manifest.tsv> [--resizable-window] [--coalesce-mouse]";
+        if (argc < 4 || (std::wstring(argv[1]) != L"--check" && std::wstring(argv[1]) != L"--launch") || std::wstring(argv[2]) != L"--manifest") throw std::runtime_error(usage);
+        LaunchOptions options;
+        for (int index = 4; index < argc; ++index) {
+            const std::wstring flag(argv[index]);
+            bool* target = flag == L"--resizable-window" ? &options.resizableWindow : flag == L"--coalesce-mouse" ? &options.coalesceMouse : nullptr;
+            if (std::wstring(argv[1]) != L"--launch" || !target || *target) throw std::runtime_error(usage);
+            *target = true;
+        }
         const auto manifest = ark::readManifest(argv[3], true);
         if (manifest.partial && std::wstring(argv[1]) == L"--launch") throw std::runtime_error("Cannot launch from a partial reload patch");
         wchar_t executable[32768]{}; GetModuleFileNameW(nullptr, executable, 32768);
@@ -116,7 +133,7 @@ int wmain(int argc, wchar_t** argv) {
         if (std::wstring(argv[1]) == L"--check") {
             std::cout << "{\"success\":true,\"protocol\":1,\"bundles\":" << manifest.entries.size() << ",\"gameStarted\":false}";
         } else {
-            auto pid = launch(manifest, runtime);
+            auto pid = launch(manifest, runtime, options);
             std::cout << "{\"success\":true,\"pid\":" << pid << ",\"runtimePending\":true}";
         }
         return 0;
