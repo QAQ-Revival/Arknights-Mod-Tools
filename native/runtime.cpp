@@ -131,14 +131,15 @@ struct Loaded {
     std::shared_ptr<Managed> object;
     std::shared_ptr<Loaded> successor;
     std::shared_ptr<Managed> successorPin;
-    bool unloaded = false;
+    std::atomic_bool unloaded = false;
     std::mutex reloadMutex;
 };
 struct Pending { std::shared_ptr<Managed> object; std::wstring source; std::shared_ptr<Target> target; };
 std::map<std::wstring, std::shared_ptr<Target>> targets;
 std::map<void*, std::shared_ptr<Loaded>> loaded;
 std::map<std::wstring, std::vector<std::weak_ptr<Loaded>>> sourceBundles;
-size_t remembered = 0;
+size_t remembered = 0, pendingLoads = 0;
+std::atomic_size_t restoredBundles = 0, ignoredStaleUnloads = 0;
 std::map<void*, Pending> creating;
 std::map<std::wstring, std::vector<Pending>> assetRequests;
 
@@ -226,9 +227,10 @@ bool retire(const std::shared_ptr<Loaded>& entry) {
 }
 void* currentBundle(const std::shared_ptr<Loaded>& entry) {
     auto desired = targetFor(entry->source);
-    if (same(desired, entry->target)) return entry->object->get();
+    const bool wasUnloaded = entry->unloaded.load();
+    if (!wasUnloaded && same(desired, entry->target)) return entry->object->get();
     std::unique_lock lock(entry->reloadMutex, std::try_to_lock);
-    if (!lock || !retire(entry)) return entry->object->get();
+    if (!lock || !retire(entry)) return entry->unloaded ? nullptr : entry->object->get();
     struct Guard { Guard() { internalLoad = true; } ~Guard() { internalLoad = false; } } guard;
     auto load = [&](const std::shared_ptr<Target>& target) {
         auto chosen = target ? target : makeTarget(entry->source, "");
@@ -239,10 +241,10 @@ void* currentBundle(const std::shared_ptr<Loaded>& entry) {
         remember(result, entry->source, target);
         return result;
     };
-    if (auto result = load(desired)) return result;
+    if (auto result = load(desired)) { if (wasUnloaded) ++restoredBundles; return result; }
     auto result = load(entry->target);
     ark::writeStatus(statusDirectory, "reload-deferred", "Changed bundle load failed; previous resources were retained. Re-enter the character view to retry.");
-    return result ? result : entry->object->get();
+    return result;
 }
 void* loadFile(LoadBundle original, void* input, uint32_t crc, uint64_t offset, bool async) {
     RuntimeThread thread;
@@ -259,13 +261,16 @@ void* loadFile(LoadBundle original, void* input, uint32_t crc, uint64_t offset, 
         std::unique_lock lock(previous->reloadMutex, std::try_to_lock);
         if (!lock || !retire(previous)) target = previous->target;
     }
-    if (target && (!ark::fs::is_regular_file(target->file) || ark::hasLink(target->file))) target = nullptr;
+    // Accepted manifests own immutable files for the entire game session.
+    // Validation is done at launch/reload, outside Unity's resource hot path.
     auto result = original(target ? target->name->get() : input, target ? 0 : crc, offset);
     if (!result) return result;
     if (async) {
         Pending request{std::make_shared<Managed>(result, true), source, target};
         std::lock_guard lock(stateMutex);
-        for (auto it = creating.begin(); it != creating.end();) { if (it->second.object->get() != it->first) it = creating.erase(it); else ++it; }
+        if (++pendingLoads % 128 == 0) {
+            for (auto it = creating.begin(); it != creating.end();) { if (it->second.object->get() != it->first) it = creating.erase(it); else ++it; }
+        }
         creating.insert_or_assign(result, std::move(request));
     } else remember(result, source, target);
     return result;
@@ -284,9 +289,16 @@ void* getBundle(void* request) {
 void unload(void* object, bool destroyObjects) {
     RuntimeThread thread;
     if (!thread) { originalUnload(object, destroyObjects); return; }
-    auto entry = known(object);
-    if (entry && !internalLoad) object = entry->object->get();
-    { std::lock_guard lock(stateMutex); auto found = loaded.find(object); if (found != loaded.end() && found->second->unloaded) return; }
+    // Unload belongs to the wrapper Unity released. Only asset reads follow
+    // successors; forwarding a stale release would destroy the new generation.
+    {
+        std::lock_guard lock(stateMutex);
+        auto found = loaded.find(object);
+        if (found != loaded.end() && found->second->object->get() == object && found->second->unloaded) {
+            ++ignoredStaleUnloads;
+            return;
+        }
+    }
     originalUnload(object, destroyObjects);
     std::lock_guard lock(stateMutex);
     auto found = loaded.find(object);
@@ -296,7 +308,10 @@ void* asset(LoadAsset original, void* bundle, void* name, void* type, bool async
     RuntimeThread thread;
     if (!thread) return original(bundle, name, type);
     auto entry = known(bundle);
-    if (entry) if (auto current = currentBundle(entry)) bundle = current;
+    if (entry) {
+        bundle = currentBundle(entry);
+        if (!bundle) return nullptr;
+    }
     auto result = original(bundle, name, type);
     if (async && result && entry) {
         Pending request{std::make_shared<Managed>(result, true), entry->source, nullptr};
@@ -323,6 +338,7 @@ std::string response(size_t changed = 0) {
     return "{\"success\":true,\"protocol\":" + std::string(reloadAvailable ? "2" : "1") + ",\"pid\":" + std::to_string(GetCurrentProcessId()) +
         ",\"manifest\":" + ark::jsonString(ark::utf8((statusDirectory / L"manifest.tsv").wstring())) +
         ",\"lastPatch\":" + ark::jsonString(ark::utf8(lastPatch)) + ",\"changedBundles\":" + std::to_string(changed) + ",\"mappedBundles\":" + std::to_string(targets.size()) + ",\"refreshRequired\":true" +
+        ",\"restoredBundles\":" + std::to_string(restoredBundles.load()) + ",\"ignoredStaleUnloads\":" + std::to_string(ignoredStaleUnloads.load()) +
         ",\"mouseCoalescing\":" + mouse() + "}";
 }
 void serve() {
@@ -445,7 +461,9 @@ DWORD WINAPI initialize(void*) {
         if (_wcsicmp(executable.filename().c_str(), L"Arknights.exe")) return 0;
         auto length = GetEnvironmentVariableW(L"QAQR_ARKNIGHTS_MANIFEST", location, 32768);
         if (!length || length >= 32768) return 0;
-        startupManifest = ark::readManifest(location, true);
+        // ArkLoader validates before CreateProcess. Rehashing here delays hook
+        // installation while Unity is already starting to load resources.
+        startupManifest = ark::readManifest(location, false);
         if (startupManifest.partial || ark::normalized(startupManifest.game) != ark::normalized(executable)) return 0;
         statusDirectory = startupManifest.file.parent_path();
         wchar_t resize[2]{};

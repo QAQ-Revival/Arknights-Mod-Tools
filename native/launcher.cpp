@@ -116,22 +116,26 @@ int wmain(int argc, wchar_t** argv) {
             std::cout << ark::runtimeRequest(pid, reload ? manifest.file.wstring() : L"");
             return 0;
         }
-        const char* usage = "Usage: ArkLoader --check|--launch|--reload|--runtime-status --manifest <manifest.tsv> [--resizable-window] [--coalesce-mouse]";
+        const char* usage = "Usage: ArkLoader --check|--launch|--reload|--runtime-status --manifest <manifest.tsv> [--changed-only] [--resizable-window] [--coalesce-mouse]";
         if (argc < 4 || (std::wstring(argv[1]) != L"--check" && std::wstring(argv[1]) != L"--launch") || std::wstring(argv[2]) != L"--manifest") throw std::runtime_error(usage);
         LaunchOptions options;
+        bool changedOnly = false;
         for (int index = 4; index < argc; ++index) {
             const std::wstring flag(argv[index]);
+            if (std::wstring(argv[1]) == L"--check" && flag == L"--changed-only" && !changedOnly) { changedOnly = true; continue; }
             bool* target = flag == L"--resizable-window" ? &options.resizableWindow : flag == L"--coalesce-mouse" ? &options.coalesceMouse : nullptr;
             if (std::wstring(argv[1]) != L"--launch" || !target || *target) throw std::runtime_error(usage);
             *target = true;
         }
-        const auto manifest = ark::readManifest(argv[3], true);
+        const auto manifest = ark::readManifest(argv[3], false);
+        const auto verified = ark::verifyManifest(manifest, std::wstring(argv[1]) == L"--check" && !changedOnly);
         if (manifest.partial && std::wstring(argv[1]) == L"--launch") throw std::runtime_error("Cannot launch from a partial reload patch");
         wchar_t executable[32768]{}; GetModuleFileNameW(nullptr, executable, 32768);
         auto runtime = ark::fs::path(executable).parent_path() / L"ArkRuntime.dll";
         if (!ark::fs::is_regular_file(runtime) || ark::hasLink(runtime)) throw std::runtime_error("Built runtime DLL is missing");
         if (std::wstring(argv[1]) == L"--check") {
-            std::cout << "{\"success\":true,\"protocol\":1,\"bundles\":" << manifest.entries.size() << ",\"gameStarted\":false}";
+            std::cout << "{\"success\":true,\"protocol\":1,\"bundles\":" << manifest.entries.size()
+                << ",\"verifiedFiles\":" << verified.files << ",\"verifiedBytes\":" << verified.bytes << ",\"gameStarted\":false}";
         } else {
             auto pid = launch(manifest, runtime, options);
             std::cout << "{\"success\":true,\"pid\":" << pid << ",\"runtimePending\":true}";

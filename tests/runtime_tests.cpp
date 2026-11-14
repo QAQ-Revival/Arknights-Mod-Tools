@@ -119,6 +119,13 @@ int wmain(int argc, wchar_t** argv) {
         auto newA = static_cast<fixture::Bundle*>(::loadAsset(oldA, nullptr, nullptr));
         check(newA->file == first.parent_path() / L"changed.ab", "Cached bundle did not follow its replacement");
         check(oldA->unloaded && !oldA->destroyed, "Displayed objects were destroyed");
+        ::unload(oldA, true);
+        check(!newA->unloaded && !newA->destroyed, "Releasing an old cached wrapper unloaded the replacement bundle");
+        ::unload(newA, false);
+        auto restoredA = static_cast<fixture::Bundle*>(::loadAsset(oldA, nullptr, nullptr));
+        check(restoredA != newA && !restoredA->unloaded && restoredA->file == newA->file,
+            "Re-entering the view reused an unloaded bundle of the same version");
+        newA = restoredA;
         std::exception_ptr workerError;
         std::thread worker([&] {
             try {

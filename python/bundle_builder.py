@@ -2,19 +2,50 @@
 import hashlib
 import io
 import json
+import os
+import shutil
 import tempfile
+from functools import lru_cache
 from pathlib import Path
 
 import UnityPy
 from PIL import Image
 from UnityPy.enums import TextureFormat
 from worker import BUNDLE_EXTS, bundle_records, normalized, source_files
-from pc_layout import CHARACTER, character_hints, current_bundles, game_roots, read_bindings, relative_path
+from pc_layout import CHARACTER, character_hints, checked_file, current_bundles, game_roots, read_bindings, relative_path
+
+MAX_BUNDLES = 4096
 
 
 def digest(file):
     with file.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def read_cache(directory):
+    if not directory:
+        return {}
+    index = Path(directory) / 'bundle-index.json'
+    try:
+        data = json.loads(index.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return {}
+    return {item['logical'].casefold(): item for item in data.get('bundles', [])} if data.get('schemaVersion') == 1 else {}
+
+
+def input_fingerprint(items, source, hash_file, approved_pairs):
+    inputs = [(item['file'].relative_to(source).as_posix(), item['key'], hash_file(item['file'])) for item in items]
+    return hashlib.sha256(json.dumps([inputs, sorted(approved_pairs)], ensure_ascii=False).encode('utf-8')).hexdigest()
+
+
+def cached_bundle(cache, directory, relative, original_hash, fingerprint):
+    entry = cache.get(relative.casefold())
+    if not entry or entry.get('inputFingerprint') != fingerprint or entry['sourceSha256'] != original_hash:
+        return None
+    file = checked_file(Path(directory), entry['replacement'])
+    if not file.is_file() or digest(file) != entry['replacementSha256']:
+        return None
+    return entry, file
 
 
 def build_bundles(request):
@@ -47,6 +78,14 @@ def build_bundles(request):
         binding = bindings.get(file, {})
         resources.append({'file': file, 'key': normalized(binding.get('target', file.name)), 'bundle': binding.get('bundle')})
         by_key.setdefault(resources[-1]['key'], []).append(resources[-1])
+    hash_resource = lru_cache(maxsize=None)(digest)
+    fully_bound = all(item['bundle'] for item in resources)
+    by_bundle = {}
+    for item in resources:
+        if item['bundle']:
+            by_bundle.setdefault(item['bundle'].casefold(), []).append(item)
+    cache_directory = request.get('cacheDirectory')
+    cache = read_cache(cache_directory)
     ids = {match.lower() for file in inputs for match in CHARACTER.findall(file.name)}
     ids.update(character_hints(request))
     ids.update(match.lower() for item in bindings.values() for match in CHARACTER.findall(item['bundle']))
@@ -61,10 +100,10 @@ def build_bundles(request):
     scoped = scopes is not None
     affected = set()
     if scoped:
-        if not isinstance(scopes, list) or not scopes or len(scopes) > 200:
+        if not isinstance(scopes, list) or not scopes or len(scopes) > 1000:
             raise ValueError('Invalid scope list')
         previous = request.get('affectedBundles', [])
-        if not isinstance(previous, list) or len(previous) > 200:
+        if not isinstance(previous, list) or len(previous) > MAX_BUNDLES:
             raise ValueError('Invalid affected bundle list')
         affected.update(relative_path(value).casefold() for value in previous)
         for scope_source in scopes:
@@ -91,17 +130,34 @@ def build_bundles(request):
                 raise ValueError('The selected Mod needs unambiguous current PC resource bindings; diagnose and convert it first: ' + scope.name)
             for matches in scope_matches.values():
                 affected.update(matches)
-        if len(affected) > 200:
+        if len(affected) > MAX_BUNDLES:
             raise ValueError('Too many bundles in a single patch')
         requested = sorted(affected)
     loaded = []
+    reused = []
+    fingerprints = {}
     matches = {item['file']: [] for item in resources if not scoped or (item['bundle'] and item['bundle'].casefold() in affected)}
     removed = []
     selected_originals = current_bundles(roots, set() if scoped or (resources and all(item['bundle'] for item in resources)) else ids, requested)
+    if len(selected_originals) > MAX_BUNDLES:
+        raise ValueError('Too many bundles in a single preparation')
     if scoped and affected.difference(relative.casefold() for relative, _ in selected_originals):
         raise ValueError('A previously loaded game bundle is missing; restart and prepare Mods against the current game version')
     for relative, original in selected_originals:
         before_hash = digest(original)
+        if fully_bound:
+            items = by_bundle.get(relative.casefold(), [])
+            fingerprints[relative] = input_fingerprint(items, source, hash_resource, approved_pairs)
+            cached = cached_bundle(cache, cache_directory, relative, before_hash, fingerprints[relative])
+            if cached:
+                entry, file = cached
+                reused.append(({**entry, 'source': original.relative_to(game.parent).as_posix()}, file))
+                for item in items:
+                    matches[item['file']].append((relative, item['key']))
+                continue
+            if scoped and not items:
+                removed.append({'source': original.relative_to(game.parent).as_posix(), 'sourceSha256': before_hash, 'logical': relative})
+                continue
         records, _, platforms, env = bundle_records(original, return_env=True)
         selected = []
         for record in records:
@@ -123,6 +179,14 @@ def build_bundles(request):
     with tempfile.TemporaryDirectory(prefix='.qaqr-bundles-', dir=output.parent) as temporary:
         stage = Path(temporary)
         bundles = []
+        for entry, file in reused:
+            target = stage / entry['replacement']
+            target.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.link(file, target)
+            except OSError:
+                shutil.copyfile(file, target)
+            bundles.append(entry)
         for relative, original, before_hash, targets in loaded:
             if digest(original) != before_hash:
                 raise ValueError('Game resources changed during preparation')
@@ -139,7 +203,7 @@ def build_bundles(request):
             written = {}
             for record, file in selected:
                 oid = identity(record['object'])
-                file_hash = digest(file)
+                file_hash = hash_resource(file)
                 if oid in written:
                     previous_file, previous_hash = written[oid]
                     pair = tuple(sorted(((previous_file, previous_hash), (file.relative_to(source).as_posix(), file_hash))))
@@ -185,6 +249,8 @@ def build_bundles(request):
                 raise ValueError("Game resources changed during preparation")
             replacement = 'bundles/' + relative
             bundles.append({"source": original.relative_to(game.parent).as_posix(), "replacement": replacement, "sourceSha256": before_hash, "replacementSha256": hashlib.sha256(encoded).hexdigest(), "resources": changed, "logical": relative, "inputs": sorted({file.relative_to(source).as_posix() for _, file in targets})})
+            if relative in fingerprints:
+                bundles[-1]['inputFingerprint'] = fingerprints[relative]
             target = stage / replacement
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(encoded)
@@ -198,4 +264,4 @@ def build_bundles(request):
             lines.append('\t'.join(['REMOVE', bundle['source'], bundle['sourceSha256']]))
         (stage / "manifest.tsv").write_text("\n".join(lines) + "\n", encoding="utf-8")
         stage.rename(output)
-        return {"success": True, "bundleCount": len(bundles), "resourceCount": len(matches), "bundles": bundles, "removedBundles": removed, "objectAndResourceRoundTripVerified": True, "runtimeValidated": False}
+        return {"success": True, "bundleCount": len(bundles), "reusedBundleCount": len(reused), "resourceCount": len(matches), "bundles": bundles, "removedBundles": removed, "objectAndResourceRoundTripVerified": True, "runtimeValidated": False}

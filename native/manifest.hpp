@@ -14,6 +14,8 @@ bool within(const fs::path& file, const fs::path& root);
 bool hasLink(const fs::path& file);
 std::string sha256(const fs::path& file);
 Manifest readManifest(const fs::path& file, bool verifyHashes);
+struct Verification { size_t files = 0; uint64_t bytes = 0; };
+Verification verifyManifest(const Manifest& manifest, bool full);
 std::string jsonString(const std::string& value);
 std::string utf8(const std::wstring& value);
 std::wstring wide(const std::string& value);

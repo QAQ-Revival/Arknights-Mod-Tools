@@ -47,9 +47,9 @@ compile(hookSources, [...includes, '/c']);
 const hookObjects = fs.readdirSync(objects).filter(file => file.endsWith('.obj')).map(file => path.join('native', file));
 const common = ['/std:c++20', '/EHsc', ...includes];
 compile(['../native/manifest.cpp', '../native/runtime.cpp', '../native/window.cpp', '../native/input.cpp'], [...common, '/LD', '/Fe../dist/loader/ArkRuntime.dll', ...hookObjects, '/link', '/Brepro']);
-compile(['../native/manifest.cpp', '../native/launcher.cpp'], [...common, '/Fe../dist/loader/ArkLoader.exe', '/link', '/Brepro']);
+compile(['../native/manifest.cpp', '../native/validation.cpp', '../native/launcher.cpp'], [...common, '/Fe../dist/loader/ArkLoader.exe', '/link', '/Brepro']);
 if (process.argv.includes('--test')) {
-  compile(['../native/manifest.cpp', '../tests/native_tests.cpp'], [...common, '/Fenative/NativeTests.exe', '/link', '/Brepro']);
+  compile(['../native/manifest.cpp', '../native/validation.cpp', '../tests/native_tests.cpp'], [...common, '/Fenative/NativeTests.exe', '/link', '/Brepro']);
   console.log(run(path.join(objects, 'NativeTests.exe'), [path.join(build, 'manifest-test-' + Date.now())]));
   compile(['../native/manifest.cpp', '../native/window.cpp', '../native/input.cpp', '../tests/runtime_tests.cpp'], [...common, '/Fenative/RuntimeTests.exe', ...hookObjects, '/link', '/Brepro']);
   console.log(run(path.join(objects, 'RuntimeTests.exe'), [path.join(build, 'runtime-test-' + Date.now())], { timeout: 60000 }));
@@ -93,5 +93,5 @@ for (const entry of fs.readdirSync(dist, { recursive: true, withFileTypes: true 
   if (/fmod|M4ALauncher|Bootstrapper\.dll/i.test(relative)) throw Error('Opaque or unused audio binary in output: ' + relative);
   inventory[relative] = hash(file);
 }
-fs.writeFileSync(path.join(dist, 'component.json'), JSON.stringify({ schemaVersion: 1, protocol: 1, source: pins.repository, sourceCommit, sourceDirty, dependencies, buildStatus: 'compiled', gameRuntimeValidated: false, capabilities: ['current-pc-bundle-rebuild', 'assetbundle-file-redirection', 'single-mod-reload-v2', 'multi-mod-reload-v1', 'aspect-window-resize-v1', 'raw-mouse-coalesce-v1'], files: inventory }, null, 2));
+fs.writeFileSync(path.join(dist, 'component.json'), JSON.stringify({ schemaVersion: 1, protocol: 1, source: pins.repository, sourceCommit, sourceDirty, dependencies, buildStatus: 'compiled', gameRuntimeValidated: false, capabilities: ['current-pc-bundle-rebuild', 'incremental-bundle-validation-v1', 'incremental-bundle-build-v1', 'assetbundle-file-redirection', 'single-mod-reload-v2', 'multi-mod-reload-v1', 'aspect-window-resize-v1', 'raw-mouse-coalesce-v1'], files: inventory }, null, 2));
 console.log('Built source-controlled loader and offline worker; no game executed.');

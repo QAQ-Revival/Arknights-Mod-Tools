@@ -18,6 +18,17 @@ int wmain(int argc, wchar_t** argv) {
         write("test.ab", ark::sha256(replacement));
         auto manifest = ark::readManifest(file, true);
         if (manifest.entries.size() != 1 || !ark::within(manifest.entries[0].replacement, output)) throw std::runtime_error("Valid manifest rejected");
+        if (ark::verifyManifest(manifest, false).files != 2 || ark::verifyManifest(manifest, false).files != 0)
+            throw std::runtime_error("Unchanged bundles were not verified once and reused");
+        if (ark::verifyManifest(manifest, true).files != 2) throw std::runtime_error("Full verification reused the metadata cache");
+        const auto modified = ark::fs::last_write_time(replacement);
+        std::ofstream(replacement) << "REPLACEMENT";
+        ark::fs::last_write_time(replacement, modified);
+        bool rejected = false;
+        try { ark::verifyManifest(manifest, false); } catch (const std::exception&) { rejected = true; }
+        if (!rejected) throw std::runtime_error("Same-size modification with preserved timestamp escaped verification");
+        std::ofstream(replacement) << "replacement";
+        if (ark::verifyManifest(manifest, false).files != 1) throw std::runtime_error("An unchanged source was unnecessarily rehashed");
         auto refuses = [&]() { try { ark::readManifest(file, true); return false; } catch (...) { return true; } };
         write("../output/test.ab", ark::sha256(replacement)); if (!refuses()) throw std::runtime_error("Traversal was accepted");
         write("test.ab", std::string(64, '0')); if (!refuses()) throw std::runtime_error("Changed output was accepted");

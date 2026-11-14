@@ -115,7 +115,7 @@ def current_bundles(roots, ids, requested=()):
     requested = set(requested)
     found = {relative.casefold(): (relative, file) for relative, file in requested_bundles(roots, requested)}
     for root in roots:
-        for category in CHARACTER_DIRS:
+        for category in CHARACTER_DIRS if ids else ():
             directory = checked_file(root, category)
             if not directory.is_dir():
                 continue

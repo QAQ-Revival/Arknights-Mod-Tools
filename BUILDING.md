@@ -54,7 +54,11 @@ performs optional offline integration checks against a local installation. Its
 output must be outside the game directory. It never executes the game.
 
 `ArkLoader --check --manifest <manifest.tsv>` verifies paths and both original and
-replacement SHA-256 values without starting the game. `--launch` is a separate,
+replacement SHA-256 values without starting the game. Add `--changed-only` to
+reuse verified file identities, sizes, write times and NTFS change times.
+`--launch` uses the same cache; a changed file is hashed again. The injected DLL
+does not repeat the launcher's full-file verification while Unity is starting.
+`--launch` is a separate,
 explicit operation. It starts the selected executable and loads the supplied
 runtime DLL through the normal Windows process APIs. It does not alter protection
 services, patch the game executable, or fall back to another injector.
@@ -66,9 +70,19 @@ produce a status report. The runtime also exposes a local, PID-checked scoped
 reload endpoint. `ArkLoader --reload --manifest <patch.tsv> --pid <pid>` accepts
 only partial manifests under the running session's `PC-Bundles/reloads` tree.
 Only affected bundles are rebuilt, including other enabled edits sharing those
-bundles. Cached bundle wrappers follow their replacement on later asset reads;
+bundles. Ordinary preparation can also reuse a previous build's bound bundles
+when the original, ordered inputs and conflict approvals match; the cached output
+hash is verified before reuse. An unchanged resource deployment survives manager
+restarts, and launch preparation uses resource metadata instead of hashing every PNG.
+Manifests and reload indexes support up to 4096 bundles.
+
+Cached bundle wrappers follow their replacement on later asset reads;
 pending asynchronous reads defer the switch. Unloading uses `Unload(false)` so
-objects already displayed in a scene are preserved. Re-enter the operator view
+objects already displayed in a scene are preserved. Releases apply only to their
+original wrapper, never to its replacement. A later asset read recreates an
+unloaded bundle even when its version has not changed. Runtime status includes
+`restoredBundles` and `ignoredStaleUnloads` counters for diagnosing these cases.
+Re-enter the operator view
 or scene to request new resources; game-level prefab caches may retain an old
 appearance. Memory/stream loads are still unsupported. A game build missing the
 reload interfaces retains ordinary file redirection and reports reload as
