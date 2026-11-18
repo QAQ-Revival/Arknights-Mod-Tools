@@ -55,7 +55,8 @@ output must be outside the game directory. It never executes the game.
 
 `ArkLoader --check --manifest <manifest.tsv>` verifies paths and both original and
 replacement SHA-256 values without starting the game. Add `--changed-only` to
-reuse verified file identities, sizes, write times and NTFS change times.
+reuse verified file identities, sizes, timestamps and file journal sequence numbers.
+Files without a usable journal record are hashed on every check.
 `--launch` uses the same cache; a changed file is hashed again. The injected DLL
 does not repeat the launcher's full-file verification while Unity is starting.
 `--launch` is a separate,
