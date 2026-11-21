@@ -71,9 +71,16 @@ produce a status report. The runtime also exposes a local, PID-checked scoped
 reload endpoint. `ArkLoader --reload --manifest <patch.tsv> --pid <pid>` accepts
 only partial manifests under the running session's `PC-Bundles/reloads` tree.
 Only affected bundles are rebuilt, including other enabled edits sharing those
-bundles. Ordinary preparation can also reuse a previous build's bound bundles
-when the original, ordered inputs and conflict approvals match; the cached output
-hash is verified before reuse. An unchanged resource deployment survives manager
+bundles. Ordinary preparation can also reuse a previous build's bundles
+when the original, the bundle's ordered inputs and the conflict approvals among
+those inputs match; the cached output hash is verified before reuse. A resource
+without a binding is matched by reading the bundles, and still rebuilds only the
+bundle it lands in. Reuse does not depend on which build of these tools made a
+bundle: raise the `incremental-bundle-build-vN` capability when the same inputs
+must produce a different bundle, and every earlier bundle is rebuilt once.
+A request with `resumeDirectories` keeps the bundles it finished when it fails
+or is stopped, listed in `bundle-index.partial.jsonl`; passing that directory
+in the next request takes them over. An unchanged resource deployment survives manager
 restarts, and launch preparation uses resource metadata instead of hashing every PNG.
 Manifests and reload indexes support up to 4096 bundles.
 

@@ -93,5 +93,5 @@ for (const entry of fs.readdirSync(dist, { recursive: true, withFileTypes: true 
   if (/fmod|M4ALauncher|Bootstrapper\.dll/i.test(relative)) throw Error('Opaque or unused audio binary in output: ' + relative);
   inventory[relative] = hash(file);
 }
-fs.writeFileSync(path.join(dist, 'component.json'), JSON.stringify({ schemaVersion: 1, protocol: 1, source: pins.repository, sourceCommit, sourceDirty, dependencies, buildStatus: 'compiled', gameRuntimeValidated: false, capabilities: ['current-pc-bundle-rebuild', 'incremental-bundle-validation-v1', 'incremental-bundle-build-v1', 'assetbundle-file-redirection', 'single-mod-reload-v2', 'multi-mod-reload-v1', 'aspect-window-resize-v1', 'raw-mouse-coalesce-v1'], files: inventory }, null, 2));
+fs.writeFileSync(path.join(dist, 'component.json'), JSON.stringify({ schemaVersion: 1, protocol: 1, source: pins.repository, sourceCommit, sourceDirty, dependencies, buildStatus: 'compiled', gameRuntimeValidated: false, capabilities: ['current-pc-bundle-rebuild', 'incremental-bundle-validation-v1', 'incremental-bundle-build-v1', 'resumable-bundle-build-v1', 'assetbundle-file-redirection', 'single-mod-reload-v2', 'multi-mod-reload-v1', 'aspect-window-resize-v1', 'raw-mouse-coalesce-v1'], files: inventory }, null, 2));
 console.log('Built source-controlled loader and offline worker; no game executed.');

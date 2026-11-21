@@ -4,6 +4,7 @@ import io
 import json
 import os
 import shutil
+import sys
 import tempfile
 from functools import lru_cache
 from pathlib import Path
@@ -15,6 +16,7 @@ from worker import BUNDLE_EXTS, bundle_records, normalized, source_files
 from pc_layout import CHARACTER, character_hints, checked_file, current_bundles, game_roots, read_bindings, relative_path
 
 MAX_BUNDLES = 4096
+PARTIAL_INDEX = 'bundle-index.partial.jsonl'
 
 
 def digest(file):
@@ -22,30 +24,67 @@ def digest(file):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def read_cache(directory):
-    if not directory:
-        return {}
-    index = Path(directory) / 'bundle-index.json'
+def report(phase, done, total):
+    """One line per bundle on stderr: the caller only stops a build that falls silent."""
     try:
-        data = json.loads(index.read_text(encoding='utf-8'))
-    except (OSError, ValueError):
-        return {}
-    return {item['logical'].casefold(): item for item in data.get('bundles', [])} if data.get('schemaVersion') == 1 else {}
+        sys.stderr.write('\t'.join(('QAQR-PROGRESS', phase, str(done), str(total))) + '\n')
+        sys.stderr.flush()
+    except (AttributeError, OSError, ValueError):
+        pass  # The caller is gone. Finish anyway: the next build takes these bundles over.
+
+
+def read_cache(directories):
+    """Bundles of earlier builds by logical path. A finished build has an index;
+    an interrupted one lists each bundle it finished on a line of its own."""
+    cache = {}
+    for directory in directories:
+        root = Path(directory)
+        try:
+            data = json.loads((root / 'bundle-index.json').read_text(encoding='utf-8'))
+            entries = data['bundles'] if data['schemaVersion'] == 1 else []
+        except (OSError, ValueError, KeyError, TypeError):
+            entries = []
+            try:
+                lines = (root / PARTIAL_INDEX).read_text(encoding='utf-8').splitlines()
+            except (OSError, ValueError):
+                lines = []
+            for line in lines:
+                try:
+                    entries.append(json.loads(line))
+                except ValueError:
+                    pass  # The build stopped while writing this line.
+        for entry in entries if isinstance(entries, list) else []:
+            if isinstance(entry, dict) and isinstance(entry.get('logical'), str):
+                cache.setdefault(entry['logical'].casefold(), []).append((entry, root))
+    return cache
+
+
+def input_fingerprints(items, source, hash_file, approved_pairs):
+    """The fingerprint of one bundle's inputs, then the one older builds stored.
+    A conflict approval concerns the bundle both of its files go into; older
+    builds counted every approval, so confirming one rebuilt every bundle."""
+    inputs = [(item['file'].relative_to(source).as_posix(), item['key'], hash_file(item['file'])) for item in items]
+    names = {name for name, _, _ in inputs}
+    def fingerprint(pairs):
+        return hashlib.sha256(json.dumps([inputs, pairs], ensure_ascii=False).encode('utf-8')).hexdigest()
+    return fingerprint(sorted(pair for pair in approved_pairs if all(name in names for name, _ in pair))), fingerprint(sorted(approved_pairs))
 
 
 def input_fingerprint(items, source, hash_file, approved_pairs):
-    inputs = [(item['file'].relative_to(source).as_posix(), item['key'], hash_file(item['file'])) for item in items]
-    return hashlib.sha256(json.dumps([inputs, sorted(approved_pairs)], ensure_ascii=False).encode('utf-8')).hexdigest()
+    return input_fingerprints(items, source, hash_file, approved_pairs)[0]
 
 
-def cached_bundle(cache, directory, relative, original_hash, fingerprint):
-    entry = cache.get(relative.casefold())
-    if not entry or entry.get('inputFingerprint') != fingerprint or entry['sourceSha256'] != original_hash:
-        return None
-    file = checked_file(Path(directory), entry['replacement'])
-    if not file.is_file() or digest(file) != entry['replacementSha256']:
-        return None
-    return entry, file
+def cached_bundle(cache, relative, original_hash, fingerprints):
+    for entry, directory in cache.get(relative.casefold(), []):
+        try:
+            if entry.get('inputFingerprint') not in fingerprints or entry['sourceSha256'] != original_hash:
+                continue
+            file = checked_file(directory, entry['replacement'])
+            if file.is_file() and digest(file) == entry['replacementSha256']:
+                return {**entry, 'inputFingerprint': fingerprints[0]}, file
+        except (KeyError, TypeError, ValueError, OSError):
+            continue  # An unusable entry is rebuilt like a missing one.
+    return None
 
 
 def build_bundles(request):
@@ -80,12 +119,18 @@ def build_bundles(request):
         by_key.setdefault(resources[-1]['key'], []).append(resources[-1])
     hash_resource = lru_cache(maxsize=None)(digest)
     fully_bound = all(item['bundle'] for item in resources)
+    position = {item['file']: index for index, item in enumerate(resources)}
     by_bundle = {}
     for item in resources:
         if item['bundle']:
             by_bundle.setdefault(item['bundle'].casefold(), []).append(item)
-    cache_directory = request.get('cacheDirectory')
-    cache = read_cache(cache_directory)
+    # resumeDirectories are what interrupted builds left behind. A caller that
+    # passes the list, even empty, also gets this build's work kept on failure.
+    resumable = 'resumeDirectories' in request
+    resume_directories = request.get('resumeDirectories', [])
+    if not isinstance(resume_directories, list) or len(resume_directories) > 64 or any(not isinstance(value, str) or not value for value in resume_directories):
+        raise ValueError('Invalid resume directory list')
+    cache = read_cache([*resume_directories, *([request['cacheDirectory']] if request.get('cacheDirectory') else [])])
     ids = {match.lower() for file in inputs for match in CHARACTER.findall(file.name)}
     ids.update(character_hints(request))
     ids.update(match.lower() for item in bindings.values() for match in CHARACTER.findall(item['bundle']))
@@ -143,28 +188,41 @@ def build_bundles(request):
         raise ValueError('Too many bundles in a single preparation')
     if scoped and affected.difference(relative.casefold() for relative, _ in selected_originals):
         raise ValueError('A previously loaded game bundle is missing; restart and prepare Mods against the current game version')
-    for relative, original in selected_originals:
+    def select_inputs(relative, original):
+        records, _, _ = bundle_records(original)
+        selected, matched = [], {}
+        for record in records:
+            for item in by_key.get(normalized(record['target']), []):
+                if not item['bundle'] or item['bundle'].casefold() == relative.casefold():
+                    selected.append((record['target'], item['file']))
+                    matches.setdefault(item['file'], []).append((relative, record['target']))
+                    matched[item['file']] = item
+        return selected, sorted(matched.values(), key=lambda item: position[item['file']])
+    for index, (relative, original) in enumerate(selected_originals):
+        if resumable:
+            report('scan', index, len(selected_originals))
         before_hash = digest(original)
-        if fully_bound:
-            items = by_bundle.get(relative.casefold(), [])
-            fingerprints[relative] = input_fingerprint(items, source, hash_resource, approved_pairs)
-            cached = cached_bundle(cache, cache_directory, relative, before_hash, fingerprints[relative])
-            if cached:
-                entry, file = cached
-                reused.append(({**entry, 'source': original.relative_to(game.parent).as_posix()}, file))
+        items = by_bundle.get(relative.casefold(), [])
+        selected = None
+        if not fully_bound:
+            # A resource without a binding goes to the bundle that has its name,
+            # so the bundle is read to learn its inputs. It is still only rebuilt
+            # when those inputs changed.
+            selected, items = select_inputs(relative, original)
+        fingerprints[relative] = input_fingerprints(items, source, hash_resource, approved_pairs)
+        cached = cached_bundle(cache, relative, before_hash, fingerprints[relative])
+        if cached:
+            entry, file = cached
+            reused.append(({**entry, 'source': original.relative_to(game.parent).as_posix()}, file))
+            if fully_bound:
                 for item in items:
                     matches[item['file']].append((relative, item['key']))
-                continue
+            continue
+        if fully_bound:
             if scoped and not items:
                 removed.append({'source': original.relative_to(game.parent).as_posix(), 'sourceSha256': before_hash, 'logical': relative})
                 continue
-        records, _, platforms, env = bundle_records(original, return_env=True)
-        selected = []
-        for record in records:
-            for item in by_key.get(normalized(record['target']), []):
-                if normalized(record['target']) == item['key'] and (not item['bundle'] or item['bundle'].casefold() == relative.casefold()):
-                    selected.append((record['target'], item['file']))
-                    matches.setdefault(item['file'], []).append((relative, record['target']))
+            selected, _ = select_inputs(relative, original)
         if selected:
             loaded.append((relative, original, before_hash, selected))
         elif scoped:
@@ -176,18 +234,30 @@ def build_bundles(request):
     if ambiguous:
         raise ValueError('Specify a bundle in the resource manifest for: ' + ', '.join(ambiguous[:8]))
     output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix='.qaqr-bundles-', dir=output.parent) as temporary:
-        stage = Path(temporary)
+    stage = Path(tempfile.mkdtemp(prefix='.qaqr-bundles-', dir=output.parent))
+    built = False
+    partial = (stage / PARTIAL_INDEX).open('w', encoding='utf-8') if resumable else None
+    try:
         bundles = []
-        for entry, file in reused:
+        def finished(entry):
+            # One line per finished bundle lets the next build take over from here.
+            bundles.append(entry)
+            if partial:
+                partial.write(json.dumps(entry, ensure_ascii=False) + '\n')
+                partial.flush()
+        for index, (entry, file) in enumerate(reused):
+            if resumable and index % 64 == 0:
+                report('reuse', index, len(reused))
             target = stage / entry['replacement']
             target.parent.mkdir(parents=True, exist_ok=True)
             try:
                 os.link(file, target)
             except OSError:
                 shutil.copyfile(file, target)
-            bundles.append(entry)
-        for relative, original, before_hash, targets in loaded:
+            finished(entry)
+        for index, (relative, original, before_hash, targets) in enumerate(loaded):
+            if resumable:
+                report('build', index, len(loaded))
             if digest(original) != before_hash:
                 raise ValueError('Game resources changed during preparation')
             records, _, platforms, env = bundle_records(original, return_env=True)
@@ -248,12 +318,11 @@ def build_bundles(request):
             if digest(original) != before_hash:
                 raise ValueError("Game resources changed during preparation")
             replacement = 'bundles/' + relative
-            bundles.append({"source": original.relative_to(game.parent).as_posix(), "replacement": replacement, "sourceSha256": before_hash, "replacementSha256": hashlib.sha256(encoded).hexdigest(), "resources": changed, "logical": relative, "inputs": sorted({file.relative_to(source).as_posix() for _, file in targets})})
-            if relative in fingerprints:
-                bundles[-1]['inputFingerprint'] = fingerprints[relative]
             target = stage / replacement
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(encoded)
+            finished({"source": original.relative_to(game.parent).as_posix(), "replacement": replacement, "sourceSha256": before_hash, "replacementSha256": hashlib.sha256(encoded).hexdigest(), "resources": changed, "logical": relative, "inputs": sorted({file.relative_to(source).as_posix() for _, file in targets}), "inputFingerprint": fingerprints[relative][0]})
+            built = True
         lines = ["QAQR-ARKNIGHTS-PATCH\t1" if scoped else "QAQR-ARKNIGHTS-BUNDLES\t1", "GAME\t" + str(game)]
         for bundle in bundles:
             fields = ["BUNDLE", bundle["source"], bundle["replacement"], bundle["sourceSha256"], bundle["replacementSha256"]]
@@ -263,5 +332,14 @@ def build_bundles(request):
         for bundle in removed:
             lines.append('\t'.join(['REMOVE', bundle['source'], bundle['sourceSha256']]))
         (stage / "manifest.tsv").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        if partial:
+            partial.close()
         stage.rename(output)
         return {"success": True, "bundleCount": len(bundles), "reusedBundleCount": len(reused), "resourceCount": len(matches), "bundles": bundles, "removedBundles": removed, "objectAndResourceRoundTripVerified": True, "runtimeValidated": False}
+    except BaseException:
+        if partial:
+            partial.close()
+        # A resumable build keeps the bundles it finished for the next attempt.
+        if not (resumable and built):
+            shutil.rmtree(stage, ignore_errors=True)
+        raise
