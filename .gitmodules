@@ -1,6 +1,6 @@
 [submodule "vendor/minhook"]
 	path = vendor/minhook
-	url = https://github.com/QAQ-Revival/minhook.git
+	url = https://github.com/TsudaKageyu/minhook.git
 	branch = master
 [submodule "vendor/UnityPy"]
 	path = vendor/UnityPy
@@ -8,5 +8,5 @@
 	branch = master
 [submodule "vendor/Ark-Unpacker"]
 	path = vendor/Ark-Unpacker
-	url = https://github.com/QAQ-Revival/Ark-Unpacker.git
+	url = https://github.com/isHarryh/Ark-Unpacker.git
 	branch = v5.x

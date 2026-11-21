@@ -23,7 +23,7 @@ compiler/runtime components are external platform dependencies.
 files. Source changes require rebuilding; do not edit the built runtime manually.
 No private credentials, game data or game art belong in this repository.
 
-Each submodule tracks its organization fork branch declared in `.gitmodules` and `sources.json`.
+Each submodule tracks the branch declared in `.gitmodules` and `sources.json`: UnityPy from its organization fork, which carries a change, the others from their upstream repositories.
 Use `git submodule update --init --remote --recursive` to select each branch's
 latest commit, then rebuild and run verification. The superproject gitlinks and
 build manifest record the checkout used for that build; no tag is enforced.
